@@ -428,23 +428,3 @@ class SCAN(nn.Module):
             similarities = similarities.transpose(0, 1)
 
         return similarities
-
-    def visualize(self, images, img_mean, captions, cap_lens, cap_mean):
-        g_sim = cap_mean.mm(img_mean.t())[0]
-        n_word = cap_lens
-        cap_i = captions[:n_word, :].unsqueeze(0).contiguous()
-        # --> (n_image, n_word, d)
-        cap_i_expand = cap_i.repeat(1, 1, 1)
-        img_i = images.unsqueeze(0)
-        img_i_expand = img_i.repeat(1, 1, 1)
-        # Focal attention in text-to-image direction
-        # weiContext: (n_image, n_word, d)
-        weiContext, t2i_attn = func_attention(cap_i_expand, img_i_expand, g_sim, self.opt)
-
-
-        # Focal attention in image-to-text direction
-        # weiContext: (n_image, n_word, d)
-        weiContext, i2t_attn = func_attention(img_i_expand, cap_i_expand, g_sim, self.opt)
-
-
-        return t2i_attn.squeeze(0), i2t_attn.squeeze(0)
