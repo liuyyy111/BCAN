@@ -87,7 +87,7 @@ def func_attention(query, context, g_sim, opt, eps=1e-8):
     # --> (batch, d, sourceL)
     contextT = torch.transpose(context, 1, 2)
     # --> (batch, sourceL, queryL)
-    re_attnT = torch.transpose(attn, 1, 2).contiguous()
+    re_attnT = torch.transpose(re_attn, 1, 2).contiguous()
     # (batch x d x sourceL)(batch x sourceL x queryL)
     # --> (batch, d, queryL)
     weightedContext = torch.bmm(contextT, re_attnT)
