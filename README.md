@@ -1,5 +1,5 @@
 # Introduction 
-This is Bidirectional Correct Attention Network, source code of [Attend, Correct and Focus: Bidirectional Correct Attention Network for Image-Text Matching](www.baidu.com)
+This is Bidirectional Correct Attention Network, source code of Attend, Correct and Focus: Bidirectional Correct Attention Network for Image-Text Matching (ICIP 2021)
 It is built on top of the [SCAN](github.com/kuanghuei/SCAN) in Pytorch.
 # Requirements and Installation
 We recommended the following dependencies.
