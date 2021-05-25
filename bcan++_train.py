@@ -1,12 +1,8 @@
 # -*- coding:UTF-8 -*-
-
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on
-# https://arxiv.org/abs/1803.08024.
-# "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# "BCAN++: Cross-modal Retrieval With Bidirectional Correct Attention Network"
+# Yang Liu, Hong Liu, Huaqiu Wang, Fanyang Meng, Mengyuan Liu*
 #
-# Writen by Kuang-Huei Lee, 2018
 # ---------------------------------------------------------------
 """Training script"""
 
@@ -58,7 +54,7 @@ def main():
                         help='Gradient clipping threshold.')
     parser.add_argument('--num_epochs', default=20, type=int,
                         help='Number of training epochs.')
-    parser.add_argument('--batch_size', default=32, type=int,
+    parser.add_argument('--batch_size', default=128, type=int,
                         help='Size of a training mini-batch.')
     parser.add_argument('--word_dim', default=300, type=int,
                         help='Dimensionality of the word embedding.')
@@ -68,7 +64,7 @@ def main():
                         help='Number of GRU layers.')
     parser.add_argument('--learning_rate', default=.0002, type=float,
                         help='Initial learning rate.')
-    parser.add_argument('--lr_update', default=13, type=int,
+    parser.add_argument('--lr_update', default=15, type=int,
                         help='Number of epochs to update the learning rate.')
     parser.add_argument('--workers', default=0, type=int,
                         help='Number of data loader workers.')
@@ -101,7 +97,7 @@ def main():
     if torch.cuda.device_count() > 1:
         os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpuid)
 
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
 
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
     logging.info('train')
