@@ -1,10 +1,7 @@
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on
-# https://arxiv.org/abs/1803.08024.
-# "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# "BCAN++: Cross-modal Retrieval With Bidirectional Correct Attention Network"
+# Yang Liu, Hong Liu, Huaqiu Wang, Fanyang Meng, Mengyuan Liu*
 #
-# Writen by Kuang-Huei Lee, 2018
 # ---------------------------------------------------------------
 """SCAN model"""
 import copy
