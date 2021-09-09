@@ -1,10 +1,7 @@
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on
-# https://arxiv.org/abs/1803.08024.
-# "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# "BCAN++: Cross-modal Retrieval With Bidirectional Correct Attention Network"
+# Yang Liu, Hong Liu, Huaqiu Wang, Fanyang Meng, Mengyuan Liu*
 #
-# Writen by Kuang-Huei Lee, 2018
 # ---------------------------------------------------------------
 """Evaluation"""
 
@@ -26,7 +23,6 @@ from vocab import deserialize_vocab
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
-
     def __init__(self):
         self.reset()
 
@@ -54,7 +50,6 @@ class AverageMeter(object):
 
 class LogCollector(object):
     """A collection of logging objects that can change from train to val"""
-
     def __init__(self):
         # to keep the order of logged variables deterministic
         self.meters = OrderedDict()
@@ -163,12 +158,13 @@ def evalrank(model_path, data_path=None, split='dev', fold5=False):
     if data_path is not None:
         opt.data_path = data_path
 
+
     # load vocabulary used by the model
     vocab = deserialize_vocab(os.path.join(opt.vocab_path, '%s_vocab.json' % opt.data_name))
+    word2idx = vocab.word2idx
     opt.vocab_size = len(vocab)
-    # opt.correct_type = 'prob'
-    # construct model
-    model = SCAN(opt)
+
+    model = SCAN(word2idx, opt)
     model = torch.nn.DataParallel(model)
     model.cuda()
 
@@ -189,8 +185,9 @@ def evalrank(model_path, data_path=None, split='dev', fold5=False):
         img_embs = np.array([img_embs[i] for i in range(0, len(img_embs), 5)])
         start = time.time()
 
-        sims = shard_xattn(model, img_embs, img_means, cap_embs, cap_lens, cap_means,opt, shard_size=128)
+        sims = shard_xattn(model, img_embs, img_means, cap_embs, cap_lens, cap_means,opt, shard_size=500)
 
+        # np.save('f30k_dev', sims)
         end = time.time()
         print("calculate similarity time:", end - start)
 
@@ -209,10 +206,12 @@ def evalrank(model_path, data_path=None, split='dev', fold5=False):
         results = []
         for i in range(5):
             img_embs_shard = img_embs[i * 5000:(i + 1) * 5000:5]
+            img_means_shard = img_means[i * 5000:(i + 1) * 5000:5]
             cap_embs_shard = cap_embs[i * 5000:(i + 1) * 5000]
             cap_lens_shard = cap_lens[i * 5000:(i + 1) * 5000]
+            cap_means_shard = cap_means[i * 5000:(i + 1) * 5000]
             start = time.time()
-            sims = shard_xattn(model, img_embs_shard, cap_embs_shard, cap_lens_shard, opt, shard_size=128)
+            sims = shard_xattn(model, img_embs_shard, img_means_shard, cap_embs_shard, cap_lens_shard, cap_means_shard, opt, shard_size=128)
 
             end = time.time()
             print("calculate similarity time:", end - start)
@@ -286,6 +285,7 @@ def i2t(images, captions, caplens, sims, npts=None, return_ranks=False):
         # Score
         rank = 1e20
         for i in range(5 * index, 5 * index + 5, 1):
+            # print(inds, i, index, npts)
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
                 rank = tmp

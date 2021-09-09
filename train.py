@@ -1,12 +1,8 @@
 # -*- coding:UTF-8 -*-
-
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on
-# https://arxiv.org/abs/1803.08024.
-# "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# "BCAN++: Cross-modal Retrieval With Bidirectional Correct Attention Network"
+# Yang Liu, Hong Liu, Huaqiu Wang, Fanyang Meng, Mengyuan Liu*
 #
-# Writen by Kuang-Huei Lee, 2018
 # ---------------------------------------------------------------
 """Training script"""
 
@@ -56,9 +52,9 @@ def main():
                         help='Rank loss margin.')
     parser.add_argument('--grad_clip', default=2.0, type=float,
                         help='Gradient clipping threshold.')
-    parser.add_argument('--num_epochs', default=15, type=int,
+    parser.add_argument('--num_epochs', default=20, type=int,
                         help='Number of training epochs.')
-    parser.add_argument('--batch_size', default=64, type=int,
+    parser.add_argument('--batch_size', default=128, type=int,
                         help='Size of a training mini-batch.')
     parser.add_argument('--word_dim', default=300, type=int,
                         help='Dimensionality of the word embedding.')
@@ -94,21 +90,16 @@ def main():
                         help='Use bidirectional GRU.')
     parser.add_argument('--lambda_softmax', default=20., type=float,
                         help='Attention softmax temperature.')
-    parser.add_argument('--gpuid', default=0, type=str,
-                        help='gpuid')
-    opt = parser.parse_known_args()[0]
-    print(opt.gpuid)
-    if torch.cuda.device_count() > 1:
-        os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpuid)
 
-    torch.autograd.set_detect_anomaly(True)
+    opt = parser.parse_known_args()[0]
+
 
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
     logging.info('train')
-    # tb_logger.configure(opt.logger_name, flush_secs=5)
 
     # Load Vocabulary Wrapper
     vocab = deserialize_vocab(os.path.join(opt.vocab_path, '%s_vocab.json' % opt.data_name))
+    word2idx = vocab.word2idx
     opt.vocab_size = len(vocab)
 
     # Load data loaders
@@ -116,7 +107,7 @@ def main():
         opt.data_name, vocab, opt.batch_size, opt.workers, opt)
 
     # Construct the model
-    model = SCAN(opt)
+    model = SCAN(word2idx, opt)
     model.cuda()
     model = nn.DataParallel(model)
 
@@ -170,9 +161,7 @@ def main():
             'model': model.state_dict(),
             'best_rsum': best_rsum,
             'opt': opt,
-            # 'Eiters': model.Eiters,
             'optimizer': optimizer.state_dict(),
-            # 'amp': amp.state_dict()
         }, is_best, filename='checkpoint_{}.pth.tar'.format(epoch), prefix=opt.model_name + '/')
 
 
@@ -180,10 +169,6 @@ class DataPrefetcher():
     def __init__(self, loader):
         self.loader = iter(loader)
         self.stream = torch.cuda.Stream()
-        # With Amp, it isn't necessary to manually convert data to half.
-        # if args.fp16:
-        #     self.mean = self.mean.half()
-        #     self.std = self.std.half()
         self.preload()
 
     def preload(self):
@@ -195,11 +180,7 @@ class DataPrefetcher():
         with torch.cuda.stream(self.stream):
             self.images = self.images.cuda()
             self.captions = self.captions.cuda()
-            # With Amp, it isn't necessary to manually convert data to half.
-            # if args.fp16:
-            #     self.next_input = self.next_input.half()
-            # else:
-            #     self.next_input = self.next_input.float()
+
 
     def next(self):
         torch.cuda.current_stream().wait_stream(self.stream)
@@ -222,9 +203,6 @@ def train(opt, train_loader, model, criterion, optimizer, epoch, val_loader):
         # switch to train mode
         model.train()
         # measure data loading time
-
-
-        # make sure train logger is used
         model.logger = train_logger
 
         optimizer.zero_grad()
@@ -235,32 +213,21 @@ def train(opt, train_loader, model, criterion, optimizer, epoch, val_loader):
         loss = criterion(score)
         loss.backward()
 
-        # scaler.scale(loss).backward()
-        # with amp.scale_loss(loss, optimizer) as scaled_loss:
-            # scaled_loss.backward()
 
         if opt.grad_clip > 0:
           clip_grad_norm_(model.parameters(), opt.grad_clip)
-            # clip_grad_norm_(amp.master_params(optimizer), opt.grad_clip)
+
         optimizer.step()
-        # scaler.step(optimizer)
-        # scaler.update()
-        # measure elapsed time
+
 
         if (i + 1) % opt.log_step == 0:
             run_time += time.time() - start_time
-            log = "epoch: %d; batch: %d/%d; loss: %.4f; time: %.4f" % (epoch,
+            log = "epoch: %d; batch: %d/%d; loss: %.6f; time: %.4f" % (epoch,
                                                                        i, len(train_loader), loss.data.item(),
                                                                        run_time)
             print(log, flush=True)
             start_time = time.time()
             run_time = 0
-        # Record logs in tensorboard
-        # tb_logger.log_value('epoch', epoch, step=model.Eiters)
-        # tb_logger.log_value('step', i, step=model.Eiters)
-        # tb_logger.log_value('batch_time', batch_time.val, step=model.Eiters)
-        # tb_logger.log_value('data_time', data_time.val, step=model.Eiters)
-        # model.logger.tb_log(tb_logger, step=model.Eiters)
 
         # validate at every val_step
         images, captions, lengths, index = prefetcher.next()
@@ -270,6 +237,7 @@ def validate(opt, val_loader, model):
     # compute the encoding for all the validation images and captions
     img_embs, img_means, cap_embs, cap_lens, cap_means = encode_data(
         model, val_loader, opt.log_step, logging.info)
+    print(img_embs.shape, cap_embs.shape)
 
     img_embs = numpy.array([img_embs[i] for i in range(0, len(img_embs), 5)])
 
@@ -289,19 +257,6 @@ def validate(opt, val_loader, model):
                  (r1i, r5i, r10i, medri, meanr))
     # sum of recalls to be used for early stopping
     currscore = r1 + r5 + r10 + r1i + r5i + r10i
-
-    # record metrics in tensorboard
-    # tb_logger.log_value('r1', r1, step=model.Eiters)
-    # tb_logger.log_value('r5', r5, step=model.Eiters)
-    # tb_logger.log_value('r10', r10, step=model.Eiters)
-    # tb_logger.log_value('medr', medr, step=model.Eiters)
-    # tb_logger.log_value('meanr', meanr, step=model.Eiters)
-    # tb_logger.log_value('r1i', r1i, step=model.Eiters)
-    # tb_logger.log_value('r5i', r5i, step=model.Eiters)
-    # tb_logger.log_value('r10i', r10i, step=model.Eiters)
-    # tb_logger.log_value('medri', medri, step=model.Eiters)
-    # tb_logger.log_value('meanr', meanr, step=model.Eiters)
-    # tb_logger.log_value('rsum', currscore, step=model.Eiters)
 
     return currscore
 

@@ -1,27 +1,18 @@
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on
-# https://arxiv.org/abs/1803.08024.
-# "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# "BCAN++: Cross-modal Retrieval With Bidirectional Correct Attention Network"
+# Yang Liu, Hong Liu, Huaqiu Wang, Fanyang Meng, Mengyuan Liu*
 #
-# Writen by Kuang-Huei Lee, 2018
 # ---------------------------------------------------------------
-"""SCAN model"""
+"""BCAN model"""
 import copy
 
 import torch
 import torch.nn as nn
 import torch.nn.init
-import torchvision.models as models
+import torchtext
 from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torch.nn.utils.weight_norm import weight_norm
-import torch.backends.cudnn as cudnn
-from torch.nn.utils.clip_grad import clip_grad_norm_
 import numpy as np
-from collections import OrderedDict
-# from transformers import BertTokenizer, BertModel, BertConfig
-from torch.utils.checkpoint import checkpoint
 
 
 def l1norm(X, dim, eps=1e-8):
@@ -106,26 +97,25 @@ def correct_equal(attn, query, context, sourceL, g_sim):
     sigma_{j} (xi - xj) = sigma_{j} xi - sigma_{j} xj
     attn: (batch, queryL, sourceL)
     """
-    re_attn = (g_sim - 0.3).unsqueeze(1).unsqueeze(2) * attn
+    # GCU process
+    d = g_sim - 0.3
+    d = torch.where(d == 0, d.new_full(d.shape, 1e-8), d)
+    re_attn = d.unsqueeze(1).unsqueeze(2) * attn
     attn_sum = torch.sum(re_attn, dim=-1, keepdim=True)
     re_attn = re_attn / attn_sum
-
     cos1 = cosine_similarity(torch.bmm(re_attn, context), query, dim=-1, keep_dim=True)
     cos1 = torch.where(cos1 == 0, cos1.new_full(cos1.shape, 1e-8), cos1)
     re_attn1 = focal_equal(re_attn, query, context, sourceL)
 
+    # LCU process
     cos = cosine_similarity(torch.bmm(re_attn1, context), query, dim=-1, keep_dim=True)
     cos = torch.where(cos == 0, cos.new_full(cos.shape, 1e-8), cos)
-
     delta = cos - cos1
     delta = torch.where(delta == 0, delta.new_full(delta.shape, 1e-8), delta)
-
     re_attn2 = delta * re_attn1
     attn_sum = torch.sum(re_attn2, dim=-1, keepdim=True)
     re_attn2 = re_attn2 / attn_sum
-
     re_attn2 = focal_equal(re_attn2, query, context, sourceL)
-    # re_attn2 = focal_equal(attn, query, context, sourceL)
     return re_attn2
 
 
@@ -149,29 +139,25 @@ def correct_prob(attn, query, context, sourceL, g_sim):
     sigma_{j} (xi - xj)gj = sigma_{j} xi*gj - sigma_{j} xj*gj
     attn: (batch, queryL, sourceL)
     """
+    # GCU process
     d = g_sim - 0.3
     d = torch.where(d == 0, d.new_full(d.shape, 1e-8), d)
     re_attn = d.unsqueeze(1).unsqueeze(2) * attn
     attn_sum = torch.sum(re_attn, dim=-1, keepdim=True)
     re_attn = re_attn / attn_sum
-
     cos1 = cosine_similarity(torch.bmm(re_attn, context), query, dim=-1, keep_dim=True)
     cos1 = torch.where(cos1 == 0, cos1.new_full(cos1.shape, 1e-8), cos1)
     re_attn1 = focal_prob(re_attn, query, context, sourceL)
 
+    # LCU process
     cos = cosine_similarity(torch.bmm(re_attn1, context), query, dim=-1, keep_dim=True)
     cos = torch.where(cos == 0, cos.new_full(cos.shape, 1e-8), cos)
-
     delta = cos - cos1
     delta = torch.where(delta == 0, delta.new_full(delta.shape, 1e-8), delta)
-
     re_attn2 = delta * re_attn1
     attn_sum = torch.sum(re_attn2, dim=-1, keepdim=True)
     re_attn2 = re_attn2 / attn_sum
-
     re_attn2 = focal_prob(re_attn2, query, context, sourceL)
-    if torch.isnan(re_attn2).any():
-        print("ddd")
     return re_attn2
 
 
@@ -249,15 +235,15 @@ class EncoderImagePrecomp(nn.Module):
         return features, features_mean
 
 
-def encoder_text(vocab_size, word_dim, embed_size, num_layers, use_bi_gru=False, no_txtnorm=False):
-    txt_enc = EncoderText(vocab_size, word_dim, embed_size, num_layers, use_bi_gru, no_txtnorm)
+def encoder_text(word2idx, vocab_size, word_dim, embed_size, num_layers, use_bi_gru=False, no_txtnorm=False):
+    txt_enc = EncoderText(word2idx, vocab_size, word_dim, embed_size, num_layers, use_bi_gru, no_txtnorm)
 
     return txt_enc
 
 
 class EncoderText(nn.Module):
 
-    def __init__(self, vocab_size, word_dim, embed_size, num_layers,
+    def __init__(self, word2idx, vocab_size, word_dim, embed_size, num_layers,
                  use_bi_gru=False, no_txtnorm=False):
         super(EncoderText, self).__init__()
         self.embed_size = embed_size
@@ -270,10 +256,26 @@ class EncoderText(nn.Module):
         self.use_bi_gru = use_bi_gru
         self.rnn = nn.GRU(word_dim, embed_size, num_layers, batch_first=True, bidirectional=use_bi_gru)
 
-        self.init_weights()
+        self.init_weights(word2idx)
 
-    def init_weights(self):
-        self.embed.weight.data.uniform_(-0.1, 0.1)
+    def init_weights(self, word2idx):
+        # self.embed.weight.data.uniform_(-0.1, 0.1)
+
+        wemb = torchtext.vocab.GloVe(cache="D:/data/.vector_cache")
+
+        # quick-and-dirty trick to improve word-hit rate
+        missing_words = []
+        for word, idx in word2idx.items():
+            if word not in wemb.stoi:
+                word = word.replace('-', '').replace('.', '').replace("'", '')
+                if '/' in word:
+                    word = word.split('/')[0]
+            if word in wemb.stoi:
+                self.embed.weight.data[idx] = wemb.vectors[wemb.stoi[word]]
+            else:
+                missing_words.append(word)
+        print('Words: {}/{} found in vocabulary; {} words missing'.format(
+            len(word2idx) - len(missing_words), len(word2idx), len(missing_words)))
 
     def forward(self, x, lengths):
         """Handles variable size captions
@@ -298,6 +300,114 @@ class EncoderText(nn.Module):
             cap_emb = l2norm(cap_emb, dim=-1)
             cap_emb_mean = l2norm(cap_emb_mean, dim=1)
         return cap_emb, cap_len, cap_emb_mean
+
+
+''' Visual self-attention module '''
+
+
+class V_single_modal_atten(nn.Module):
+    """
+    Single Visual Modal Attention Network.
+    """
+
+    def __init__(self, image_dim, embed_dim, dropout_rate=0.4, img_region_num=36):
+        """
+        param image_dim: dim of visual feature
+        param embed_dim: dim of embedding space
+        """
+        super(V_single_modal_atten, self).__init__()
+
+        self.fc1 = nn.Linear(image_dim, embed_dim)  # embed visual feature to common space
+
+        self.fc2 = nn.Linear(image_dim, embed_dim)  # embed memory to common space
+        self.fc2_2 = nn.Linear(embed_dim, embed_dim)
+
+        self.fc3 = nn.Linear(embed_dim, 1)  # turn fusion_info to attention weights
+        self.fc4 = nn.Linear(image_dim, embed_dim)  # embed attentive feature to common space
+
+        self.embedding_1 = nn.Sequential(self.fc1, nn.BatchNorm1d(img_region_num), nn.Tanh(), nn.Dropout(dropout_rate))
+        self.embedding_2 = nn.Sequential(self.fc2, nn.BatchNorm1d(embed_dim), nn.Tanh(), nn.Dropout(dropout_rate))
+        self.embedding_2_2 = nn.Sequential(self.fc2_2, nn.BatchNorm1d(embed_dim), nn.Tanh(), nn.Dropout(dropout_rate))
+        self.embedding_3 = nn.Sequential(self.fc3)
+
+        self.softmax = nn.Softmax(dim=1)  # softmax layer to calculate weights
+
+    def forward(self, v_t, m_v):
+        """
+        Forward propagation.
+        :param v_t: encoded images, shape: (batch_size, num_regions, image_dim)
+        :param m_v: previous visual memory, shape: (batch_size, image_dim)
+        :return: attention weighted encoding, weights
+        """
+        W_v = self.embedding_1(v_t)
+
+        if m_v.size()[-1] == v_t.size()[-1]:
+            W_v_m = self.embedding_2(m_v)
+        else:
+            W_v_m = self.embedding_2_2(m_v)
+
+        W_v_m = W_v_m.unsqueeze(1).repeat(1, W_v.size()[1], 1)
+
+        h_v = W_v.mul(W_v_m)
+
+        a_v = self.embedding_3(h_v)
+        a_v = a_v.squeeze(2)
+        weights = self.softmax(a_v)
+
+        v_att = ((weights.unsqueeze(2) * v_t)).sum(dim=1)
+
+        # l2 norm
+        v_att = l2norm(v_att, -1)
+
+        return v_att, weights
+
+
+class T_single_modal_atten(nn.Module):
+    """
+    Single Textual Modal Attention Network.
+    """
+
+    def __init__(self, embed_dim, dropout_rate=0.4):
+        """
+        param image_dim: dim of visual feature
+        param embed_dim: dim of embedding space
+        """
+        super(T_single_modal_atten, self).__init__()
+
+        self.fc1 = nn.Linear(embed_dim, embed_dim)  # embed visual feature to common space
+        self.fc2 = nn.Linear(embed_dim, embed_dim)  # embed memory to common space
+        self.fc3 = nn.Linear(embed_dim, 1)  # turn fusion_info to attention weights
+
+        self.embedding_1 = nn.Sequential(self.fc1, nn.Tanh(), nn.Dropout(dropout_rate))
+        self.embedding_2 = nn.Sequential(self.fc2, nn.Tanh(), nn.Dropout(dropout_rate))
+        self.embedding_3 = nn.Sequential(self.fc3)
+
+        self.softmax = nn.Softmax(dim=1)  # softmax layer to calculate weights
+
+    def forward(self, u_t, m_u):
+        """
+        Forward propagation.
+        :param v_t: encoded images, shape: (batch_size, num_regions, image_dim)
+        :param m_v: previous visual memory, shape: (batch_size, image_dim)
+        :return: attention weighted encoding, weights
+        """
+        W_u = self.embedding_1(u_t)
+
+        W_u_m = self.embedding_2(m_u)
+        W_u_m = W_u_m.unsqueeze(1).repeat(1, W_u.size()[1], 1)
+
+        h_u = W_u.mul(W_u_m)
+
+        a_u = self.embedding_3(h_u)
+        a_u = a_u.squeeze(2)
+        weights = self.softmax(a_u)
+
+        u_att = ((weights.unsqueeze(2) * u_t)).sum(dim=1)
+
+        # l2 norm
+        u_att = l2norm(u_att, -1)
+
+        return u_att, weights
 
 
 class ContrastiveLoss(nn.Module):
@@ -343,20 +453,21 @@ class SCAN(nn.Module):
     Stacked Cross Attention Network (SCAN) model
     """
 
-    def __init__(self, opt):
+    def __init__(self, word2idx, opt):
         super(SCAN, self).__init__()
         # Build Models
         self.grad_clip = opt.grad_clip
         self.img_enc = EncoderImage(opt.data_name, opt.img_dim, opt.embed_size,
                                     precomp_enc_type=opt.precomp_enc_type,
                                     no_imgnorm=opt.no_imgnorm)
-        self.txt_enc = encoder_text(opt.vocab_size, opt.word_dim,
+        self.txt_enc = encoder_text(word2idx, opt.vocab_size, opt.word_dim,
                                     opt.embed_size, opt.num_layers,
                                     use_bi_gru=True,
                                     no_txtnorm=opt.no_txtnorm)
-        # self.tag_enc = EncoderTag(opt)
-        # self.fusion = Fusion(opt)
-        # self.txt_gat = GAT(opt.embed_size, 1)
+
+        self.V_self_atten_enhance = V_single_modal_atten(opt.embed_size, opt.embed_size)
+        self.T_self_atten_enhance = T_single_modal_atten(opt.embed_size)
+
         self.opt = opt
         self.Eiters = 0
 
@@ -364,16 +475,11 @@ class SCAN(nn.Module):
         """Compute the image and caption embeddings
         """
         # Forward
-        # tag = pos[:,:,4]
-        # tag_prob = pos[:,:,5]
-        # pos = pos[:,:,:4]
         img_emb, img_mean = self.img_enc(images)
-        # tag_emb = self.tag_enc(tag)
-
-        # img_emb = self.fusion(img_emb, tag_emb)
-
-        # cap_emb (tensor), cap_lens (list)
         cap_emb, cap_lens, cap_mean = self.txt_enc(captions, lengths)
+
+        img_mean, _ = self.V_self_atten_enhance(img_emb, img_mean)
+        cap_mean, _ = self.T_self_atten_enhance(cap_emb, cap_mean)
         return img_emb, img_mean, cap_emb, cap_lens, cap_mean
 
     def forward_sim(self, img_emb, img_mean, cap_emb, cap_len, cap_mean, **kwargs):
@@ -403,20 +509,19 @@ class SCAN(nn.Module):
             # --> (n_image, n_word, d)
             cap_i_expand = cap_i.repeat(n_image, 1, 1)
 
-            # Focal attention in text-to-image direction
+            # t2i process
             # weiContext: (n_image, n_word, d)
             weiContext, _ = func_attention(cap_i_expand, images, g_sim, self.opt)
             t2i_sim = cosine_similarity(cap_i_expand, weiContext, dim=2)
             t2i_sim = t2i_sim.mean(dim=1, keepdim=True)
 
-            # Focal attention in image-to-text direction
+            # i2t process
             # weiContext: (n_image, n_word, d)
             weiContext, _ = func_attention(images, cap_i_expand, g_sim, self.opt)
             i2t_sim = cosine_similarity(images, weiContext, dim=2)
             i2t_sim = i2t_sim.mean(dim=1, keepdim=True)
 
             # Overall similarity for image and text
-
             sim = t2i_sim + i2t_sim
 
             similarities.append(sim)
