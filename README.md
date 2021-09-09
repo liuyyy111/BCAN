@@ -1,5 +1,5 @@
 # Introduction 
-This is Bidirectional Correct Attention Network, source code of Attend, Correct and Focus: Bidirectional Correct Attention Network for Image-Text Matching (ICIP 2021)[https://ieeexplore.ieee.org/abstract/document/9506438] and BCAN++: Cross-Modal Retrieval with Improved Bidirectional Correct Attention Network.
+This is Bidirectional Correct Attention Network, source code of Attend, Correct and Focus: [Bidirectional Correct Attention Network for Image-Text Matching (ICIP 2021)](https://ieeexplore.ieee.org/abstract/document/9506438) and BCAN++: Cross-Modal Retrieval with Improved Bidirectional Correct Attention Network.
 It is built on top of the [SCAN](github.com/kuanghuei/SCAN) in Pytorch.
 # Requirements and Installation
 We recommended the following dependencies.
