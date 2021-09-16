@@ -16,11 +16,6 @@ wget https://scanproject.blob.core.windows.net/scan-data/vocab.zip
 python train.py --data_path "$DATA_PATH" --data_name "$DATA_NAME" --logger_name "$LOGGER_NAME" --model_name "$MODEL_NAME"
 ```
 
-- Train new BCAN++ models: Run `bcan++_train.py`:
-```bash
-python bcan++_trian.py --data_path "$DATA_PATH" --data_name "$DATA_NAME" --logger_name "$LOGGER_NAME" --model_name "$MODEL_NAME"
-```
-
 Argument used to train Flickr30K models and MSCOCO models are similar with those of SCAN:
 
 For Flickr30K:
